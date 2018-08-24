@@ -140,6 +140,11 @@ class VideoProblem(problem.Problem):
 
   def preprocess_example(self, example, mode, hparams):
     """Runtime preprocessing, e.g., resize example["frame"]."""
+    if getattr(hparams, "preprocess_resize_frames", None) is not None:
+      example["frame"] = tf.image.resize_images(
+          example["frame"],
+          hparams.preprocess_resize_frames,
+          tf.image.ResizeMethod.BILINEAR)
     return example
 
   @property
@@ -185,6 +190,20 @@ class VideoProblem(problem.Problem):
 
     return data_fields, data_items_to_decoders
 
+  def serving_input_fn(self, hparams):
+    """For serving/predict, assume that only video frames are provided."""
+    video_input_frames = tf.placeholder(
+        dtype=tf.float32,
+        shape=[
+            None, hparams.video_num_input_frames, self.frame_width,
+            self.frame_height, self.num_channels
+        ])
+
+    # TODO(michalski): add support for passing input_action and input_reward.
+    return tf.estimator.export.ServingInputReceiver(
+        features={"inputs": video_input_frames},
+        receiver_tensors=video_input_frames)
+
   def preprocess(self, dataset, mode, hparams, interleave=True):
     del interleave
     def split_on_batch(x):
@@ -219,11 +238,6 @@ class VideoProblem(problem.Problem):
       for k, v in six.iteritems(batched_prefeatures):
         if k == "frame":  # We rename past frames to inputs and targets.
           s1, s2 = split_on_batch(v)
-          # Reshape just to make sure shapes are right and set.
-          s1 = tf.reshape(
-              s1, [hparams.video_num_input_frames] + self.frame_shape)
-          s2 = tf.reshape(
-              s2, [hparams.video_num_target_frames] + self.frame_shape)
           features["inputs"] = s1
           features["targets"] = s2
         else:
@@ -300,7 +314,7 @@ class VideoProblem(problem.Problem):
       batch_dataset = preprocessed_dataset.apply(
           tf.contrib.data.batch_and_drop_remainder(num_frames))
     dataset = batch_dataset.map(features_from_batch)
-    dataset = dataset.shuffle(256)
+    dataset = dataset.shuffle(hparams.get("shuffle_buffer_size", 128))
     return dataset
 
   def eval_metrics(self):

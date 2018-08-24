@@ -38,6 +38,7 @@ from tensor2tensor.utils import t2t_model
 
 import tensorflow as tf
 
+from tensorflow.python.ops import inplace_ops
 from tensorflow.python.util import nest
 
 
@@ -134,7 +135,7 @@ class Transformer(t2t_model.T2TModel):
         save_weights_to=self.attention_weights,
         losses=losses)
 
-    if (common_layers.is_on_tpu() and
+    if (common_layers.is_xla_compiled() and
         hparams.mode == tf.estimator.ModeKeys.TRAIN):
       # TPU does not react kindly to extra dimensions.
       # TODO(noam): remove this once TPU is more forgiving of extra dims.
@@ -668,7 +669,8 @@ def fast_decode_tpu(encoder_output,
                     sos_id=0,
                     eos_id=beam_search.EOS_ID,
                     batch_size=None,
-                    force_decode_length=False):
+                    force_decode_length=False,
+                    scope_prefix="body/"):
   """Given encoder output and a symbols to logits function, does fast decoding.
 
   Implements only greedy decoding for TPU.
@@ -687,6 +689,7 @@ def fast_decode_tpu(encoder_output,
     batch_size: An integer, must be passed if there is no input.
     force_decode_length: A bool, whether to force the full decode length, or if
         False, stop when all beams hit eos_id.
+    scope_prefix: str, prefix for decoder layer variable scopes.
 
   Returns:
       A dict of decoding results {
@@ -725,7 +728,8 @@ def fast_decode_tpu(encoder_output,
     for layer in range(num_layers):
       layer_name = "layer_%d" % layer
       with tf.variable_scope(
-          "body/decoder/%s/encdec_attention/multihead_attention" % layer_name):
+          "%sdecoder/%s/encdec_attention/multihead_attention" % (scope_prefix,
+                                                                 layer_name)):
         k_encdec = common_attention.compute_attention_component(
             encoder_output, key_channels, name="k")
         k_encdec = common_attention.split_heads(k_encdec, hparams.num_heads)
@@ -757,7 +761,7 @@ def fast_decode_tpu(encoder_output,
 
     next_id = tf.expand_dims(next_id, axis=1)
     decoded_ids = tf.transpose(decoded_ids)
-    decoded_ids = common_layers.tf_inplace_ops().alias_inplace_update(
+    decoded_ids = inplace_ops.alias_inplace_update(
         decoded_ids, i, tf.squeeze(next_id, axis=1))
     decoded_ids = tf.transpose(decoded_ids)
     return i + 1, hit_eos, next_id, decoded_ids, cache, log_prob
@@ -807,7 +811,8 @@ def fast_decode(encoder_output,
                 sos_id=0,
                 eos_id=beam_search.EOS_ID,
                 batch_size=None,
-                force_decode_length=False):
+                force_decode_length=False,
+                scope_prefix="body/"):
   """Given encoder output and a symbols to logits function, does fast decoding.
 
   Implements both greedy and beam search decoding, uses beam search iff
@@ -831,6 +836,7 @@ def fast_decode(encoder_output,
     batch_size: an integer scalar - must be passed if there is no input
     force_decode_length: bool, whether to force the full decode length, or if
       False, stop when all beams hit eos_id.
+    scope_prefix: str, prefix for decoder layer variable scopes.
 
   Returns:
       A dict of decoding results {
@@ -870,7 +876,8 @@ def fast_decode(encoder_output,
     for layer in range(num_layers):
       layer_name = "layer_%d" % layer
       with tf.variable_scope(
-          "body/decoder/%s/encdec_attention/multihead_attention" % layer_name):
+          "%sdecoder/%s/encdec_attention/multihead_attention" % (scope_prefix,
+                                                                 layer_name)):
         k_encdec = common_attention.compute_attention_component(
             encoder_output, key_channels, name="k",
             vars_3d_num_heads=vars_3d_num_heads)
@@ -1201,7 +1208,7 @@ def transformer_encoder(encoder_input,
           encoder_self_attention_bias)
       nonpadding = 1.0 - padding
     pad_remover = None
-    if hparams.use_pad_remover and not common_layers.is_on_tpu():
+    if hparams.use_pad_remover and not common_layers.is_xla_compiled():
       pad_remover = expert_utils.PadRemover(padding)
     for layer in range(hparams.num_encoder_layers or hparams.num_hidden_layers):
       with tf.variable_scope("layer_%d" % layer):
@@ -1944,6 +1951,15 @@ def transformer_tpu():
   """HParams for Transformer model on TPU."""
   hparams = transformer_base()
   update_hparams_for_tpu(hparams)
+  return hparams
+
+
+@registry.register_hparams
+def transformer_timeseries_tpu():
+  """HParams for running Transformer model on timeseries on TPU."""
+  hparams = transformer_timeseries()
+  update_hparams_for_tpu(hparams)
+  hparams.batch_size = 256  # revert to value set in transformer_timeseries
   return hparams
 
 

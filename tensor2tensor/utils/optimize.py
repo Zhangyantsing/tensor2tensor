@@ -47,10 +47,11 @@ def optimize(loss, learning_rate, hparams, use_tpu=False):
   opt_summaries = []
   if common_layers.should_generate_summaries():
     tf.summary.scalar("learning_rate", learning_rate)
-    opt_summaries = ["loss"]
-  if hparams.summarize_grads and common_layers.should_generate_summaries():
-    tf.logging.info("Summarizing gradients")
-    opt_summaries.extend(["gradients", "gradient_norm", "global_gradient_norm"])
+    opt_summaries.append("loss")
+    if hparams.summarize_grads:
+      tf.logging.info("Summarizing gradients")
+      opt_summaries.extend(
+          ["gradients", "gradient_norm", "global_gradient_norm"])
 
   if hparams.clip_grad_norm:
     tf.logging.info("Clipping gradients, norm: %0.5f", hparams.clip_grad_norm)
